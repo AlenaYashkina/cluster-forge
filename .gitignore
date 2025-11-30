@@ -1,0 +1,19 @@
+/.venv
+/.mypy_cache
+/__pycache__/
+backend/__pycache__/
+backend/.venv/
+/client/node_modules
+/client/dist
+/client/.env
+/backend/.env
+/.continue
+/.vscode
+
+# Python caches
+**/__pycache__/
+*.py[cod]
+*$py.class
+
+# IDE/editor
+.idea/
