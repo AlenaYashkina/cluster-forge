@@ -136,11 +136,6 @@ A 1‑minute animated preview of the manual clustering UI, demonstrating queue p
 
 ![Manual clustering preview](assets/cluster-preview.gif)
 
-## Screenshot
-
-![Manual clustering screenshot](assets/cluster-preview.gif)
-
-
 ## Relationship to other projects
 
 `cluster-forge` is a **support tool** for the separate project:
