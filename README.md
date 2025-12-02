@@ -1,97 +1,160 @@
-# Manual Photo Clustering
+# Cluster Forge — CLIP‑assisted image clustering for photo reports
 
-LLM-assisted, CLIP-powered manual clustering workflow rebuilt as a React + FastAPI experience to modernize the portfolio-ready flow while retaining the proven helpers from the original streamlit app.
+`cluster-forge` is an **interactive image clustering tool** that sits between raw site photos and the final photo‑report automation pipeline.
 
-## Goal & impact
+It was built to speed up preparation of maintenance photo reports for architectural / festive lighting: thousands of field photos must be grouped by **object**, **issue type**, and **fix stage** before they go into automated PowerPoint generation.
 
-— Transform a messy queue of photos into actionable clusters with CLIP centroids, auto-moves, and human-in-the-loop controls without rewriting the legacy flow.  
-— Impact: cuts manual review/prep time by ~80–90% (thanks to CLIP suggestions, auto-move thresholds, undo/playback, and React/FastAPI orchestration) while making the process observable and reversible.
+This tool combines:
 
-## Before vs after
+- **CLIP‑based auto‑suggestions** for likely clusters  
+- A **web UI** for fast manual review and corrections  
+- **Physical re‑organization of files on disk**, so downstream scripts see a clean, normalized folder tree
 
-- **Before:** manual Streamlit helpers, limited metadata, slow single-threaded review, and no audit trail for auto-labeling.
-- **After:** FastAPI/React UI, queue stats, undo/shuffle, auto-move persistence, and a documented `.clustering/state.json + actions.jsonl` log so reviewers can replay progress.
+It’s used together with the separate project **Photo Report Generator** (automatic PPTX reports).
 
-## Preview
+---
 
-A 1‑minute animated preview of the manual clustering UI, demonstrating queue paging, queue stats overlays, and assignment interactions. This visual demo anchors the before/after story above.
+## What it does
 
-![Manual clustering preview](assets/cluster-preview.gif)
+Given a root folder with photos, `cluster-forge` lets you:
 
-## Repository layout
+- Load all images from a tree of subfolders into an **interactive queue**
+- See one photo at a time in a React UI and **assign it to a cluster** (e.g.  
+  `1_Выявлено`, `2_Устранено`, `Снег`, `Мусор`, etc.)
+- Let **CLIP** propose a cluster when it’s confident enough (threshold is configurable):
+  - if similarity ≥ threshold → the image is auto‑assigned
+  - otherwise it is sent to the manual queue
+- **Move files on disk** into per‑cluster subfolders, preserving useful path fragments  
+  (construction ID, date, issue type, stage)
+- Mark images as:
+  - **accepted** (assigned to a cluster)
+  - **trash / delete later**
+  - **“maybe later”** (send to the end of the queue)
+- **Undo the last move** if you mis‑clicked
+- Keep a **history log (NDJSON)** with every decision, so you can audit and recompute stats
 
-- `backend/` — Python helpers copied from `manual_cluster.py`, plus a FastAPI service for queue management, assignments, deletions, image delivery, auto-move, and undo helpers.
-  - `cluster_core.py` contains the shared file/cluster utilities, CLIP centroid math, and state persistence.
-  - `api.py` is the FastAPI entry point; run with `uvicorn backend.api:app --reload`. It exposes `/session`, `/assign`, `/delete`, `/image`, `/auto-move`, and `/undo`.
-  - `legacy/` preserves the old Streamlit scripts (`manual_cluster.py`, `ui.py`) for reference.
-- `client/` — React + Vite UI that calls the backend via `VITE_API_BASE` and shows queue previews, suggestions, stats, and auto-move controls.
+The end result is a **clean folder structure** where each cluster has its own directory and all images are consistently grouped for downstream automation (Photo Report Generator).
 
-## Highlights
+---
 
-- **LLM/AI + manual blend:** CLIP centroids, auto-move thresholds, and overlayed queue stats keep model suggestions transparent while a “manual-only” toggle lets you quickly gather seed examples without predictions.
-- **Portfolio polish:** React overlay + sound cues signal when backend work finishes, shuffle/undo/action log playback keep operators in control, and the `.clustering/state.json`/`actions.jsonl` pair reproduces the Streamlit metrics so the UI can show precise processed/ratio counts.
-- **Production-ready backend:** FastAPI exposes `/session`, `/assign`, `/delete`, `/image`, `/auto-move`, and `/undo`, syncs history with state counts, handles RAW support via Pillow/rawpy, and safely persists auto/manual totals for dependable stats and undo semantics.
-- **Impact ready:** Auto-moves are recorded with `note: "auto"` plus CLIP-centered logs so you can explain how the app labels tens of thousands of photos with confidence, while undo + shuffle actions let reviewers drill into the experience before they read your case study.
+## How it works (high level)
 
-## Optional RAW support
+### 1. Backend (Python + FastAPI + CLIP)
 
-- The backend ships with Pillow; install `rawpy` (`pip install rawpy`) if you need to ingest RAW files (.cr2/.nef/.arw/.dng).
+- Uses **OpenCLIP** to encode:
+  - images from the root folder
+  - text prompts that describe each cluster label
+- For each image:
+  - computes cosine similarity to each label prompt
+  - picks the best match and compares it to a **confidence threshold**
+- Exposes a **FastAPI** backend with endpoints like:
+  - get next item in queue
+  - assign to a cluster
+  - move to trash / later
+  - undo last assignment
+  - compute basic stats from the history log
+- Physically **moves files on disk** into cluster folders using `pathlib`, while
+  updating an NDJSON history log in `.cluster_state/`.
 
-## Backend setup
+### 2. Frontend (React + Vite)
 
-1. Create and activate your Python environment (e.g., `python -m venv .venv && .\\.venv\\Scripts\\activate` on Windows).
-2. Install dependencies (includes `torch`, `transformers`, and `pillow` for CLIP embeddings):
+- Single‑page app that talks to the backend via REST (API URL is set in `.env`)
+- Lets the user:
+  - set root path
+  - toggle **manual‑only mode** (skip CLIP suggestions)
+  - shuffle the queue
+  - quickly assign / skip / undo
+- Shows error messages from the backend (invalid root, missing files, etc.)
+- Built with React + Vite (TypeScript), Axios for API calls, ESLint for static checks.
+
+---
+
+## Typical workflow
+
+1. **Prepare a root folder** with project photos  
+   (paths still contain construction IDs, dates and raw “issue” labels).
+2. **Start the backend** (example):
 
    ```bash
-   pip install -r backend/requirements.txt
+   # create venv and install dependencies
+   pip install -r requirements.txt
+
+   # run FastAPI app
+   uvicorn api:app --reload --port 8000
    ```
 
-3. Start the API server:
+3. **Configure the frontend**:
 
    ```bash
-   uvicorn backend.api:app --reload
+   cp .env.example .env
+   # set VITE_API_URL to the backend URL, e.g.
+   VITE_API_URL=http://localhost:8000
    ```
 
-   Visit `http://localhost:8000/docs` to explore the OpenAPI schema.
-
-> ⚠️ CLIP executes on CPU by default; install a CUDA-enabled PyTorch build if you expect heavy embedding workloads.
-
-## Environment & assumptions
-
-- Windows-friendly paths/UTF-8 encoding; run the CLI/React stack from Windows terminals (tested on Windows 10/11 with PowerShell).  
-- GPU fallback: CLIP runs on CPU by default (RTX 2070 8GB is available, but FastAPI gracefully accepts CPU-only environments).  
-- Keep `VITE_API_BASE` in sync before launching the React UI and capture logs (`INFO`/`ERROR`) to monitor batch progress.
-
-## Front-end setup
-
-1. Install the Node dependencies:
+4. **Run the frontend**:
 
    ```bash
-   cd client
    npm install
-   ```
-
-2. Copy `.env.example` to `.env` and adjust `VITE_API_BASE` if the backend runs somewhere other than `http://localhost:8000`.
-3. Launch the development UI:
-
-   ```bash
    npm run dev
    ```
 
-   The interface runs at `http://localhost:5173` by default and pulls queue, stats, and image previews from the backend.
+5. Open the shown URL (usually `http://localhost:5173`), set the root folder,  
+   and start assigning clusters. CLIP will auto‑label everything it’s confident about;
+   the rest you review manually.
 
-## Legacy Streamlit helpers
+When you’re done, the folder tree is already grouped by cluster, and you can feed it
+directly into the **Photo Report Generator** project.
 
-The legacy scripts live under `backend/legacy/manual_cluster.py` and `backend/legacy/ui.py`. They remain untouched for archival reference but are no longer the recommended UI path.
+---
 
-## Why it stands out (for hiring folks)
+## Tech highlights
 
-- **Demonstrably impact-driven:** Auto-assisted clustering + stats highlight progress (4.7K queue tracked, 180+ manual labels, 100 auto moves) with UI-ready metrics, echoing the original portfolio ask for an “LLM-assisted automation” story.
-- **Modern tooling:** FastAPI + React/Vite replace the legacy Streamlit view while staying compatible with `.clustering/state.json`, so you can narrate how you brought a real-time UI, undo workflow, and CLIP suggestions into the same tray.
-- **LLM automation skillset:** Backend code pairs CLIP embeddings with Torch/Transformers plus history persistence, while the front-end adds overlay + sound cues—this shows fluency with both data-intensive ML tooling and thoughtful UX polish, exactly what modern engineering teams look for.
+- **Python** (3.x), **FastAPI**, **Pydantic**
+- **OpenCLIP** for zero‑shot image classification
+- **React**, **Vite**, **TypeScript**
+- File‑system heavy logic with `pathlib` and incremental **NDJSON logging**
+- Focus on **human‑in‑the‑loop ML tooling**: the model helps, but the final decision is always yours.
 
-## Next steps for GitHub readiness
+---
 
-1. Add sample data or anonymized photos under `sample/` if you want to demonstrate clustering.
-2. Consider adding GitHub Actions for linting the backend and front-end.
-3. Document any environment assumptions (GPU availability, weights, etc.) before publishing the repo.
+## Repository layout (simplified)
+
+```text
+cluster-forge/
+├── api.py              # FastAPI app (REST API for the UI)
+├── cluster_core.py     # CLIP model, queue logic, file moves, logging
+├── cluster-preview.gif # Short demo of the UI
+├── client/ (or repo root)
+│   ├── package.json    # React/Vite frontend
+│   ├── vite.config.js
+│   ├── src/…           # React components & API client
+│   └── .env.example    # VITE_API_URL and other client settings
+└── README.md           # This file
+```
+
+(Exact paths may differ slightly depending on how you clone / place the backend code.)
+
+---
+
+## Relationship to other projects
+
+`cluster-forge` is a **support tool** for the separate project:
+
+- **Photo Report Generator** — automatic PPTX reports for lighting maintenance  
+  (stamped photos, grouped by object/issue/stage).
+
+Together they form a small pipeline:
+
+> raw photos → `cluster-forge` (interactive clustering) →  
+> normalized folders → Photo Report Generator (PPTX decks)
+
+---
+
+## About the author
+
+Built by **Alena Yashkina** — lighting engineer turned AI‑automation developer.  
+Portfolio and contact links:
+
+- GitHub: https://github.com/AlenaYashkina
+- LinkedIn: https://www.linkedin.com/in/alena-yashkina-a9994a35a/
+
