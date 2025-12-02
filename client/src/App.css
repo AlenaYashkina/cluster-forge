@@ -106,6 +106,7 @@
   border-radius: 16px;
   padding: 1.25rem;
   color: #f8fafc;
+  align-items: stretch;
 }
 
 .preview-image {
@@ -116,6 +117,10 @@
   align-items: center;
   justify-content: center;
   border: 1px solid #1f2937;
+  padding: 0.5rem;
+  box-sizing: border-box;
+  max-height: calc(100vh - 200px);
+  overflow: hidden;
 }
 
 .preview-image img {
@@ -220,6 +225,7 @@
   display: flex;
   gap: 0.5rem;
   flex-wrap: wrap;
+  align-items: center;
 }
 
 .queue-actions button {
@@ -234,6 +240,12 @@
 .queue-actions button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.queue-progress {
+  margin-left: auto;
+  font-size: 0.8rem;
+  color: #cbd5f5;
 }
 
 .suggestion-panel {

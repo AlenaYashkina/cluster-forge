@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import shutil
 import unicodedata
-from collections import defaultdict
+from collections import defaultdict, deque
 from datetime import datetime
+from itertools import islice
 from pathlib import Path
+from threading import Lock
 from typing import Any, Dict, List, Optional, Set, Sequence, Tuple
 
 try:
@@ -37,6 +40,8 @@ STATE_DIRNAME = ".manual_cluster"
 LOG_NAME = "actions.jsonl"
 CLUSTER_STATE_DIRNAME = ".clustering"
 CLUSTER_STATE_FILE = "state.json"
+QUEUE_FILENAME = "queue.json"
+DEFAULT_QUEUE_LIMIT = 60
 CLIP_MAX_EDGE = 1024
 _CLIP_CACHE: Optional[Tuple[CLIPModel, CLIPProcessor, torch.device, bool]] = None
 LOOKALIKES: Dict[str, str] = {
@@ -106,6 +111,60 @@ def is_image_file(path: Path) -> bool:
     return path.suffix.lower() in IMAGE_EXTS
 
 
+def _normalize_path_for_queue(raw: str) -> str:
+    try:
+        return str(Path(raw).absolute())
+    except (OSError, RuntimeError, TypeError):
+        return raw
+
+
+def _path_in_known_clusters(path: Path, tokens: Set[str]) -> bool:
+    if not tokens:
+        return False
+    for candidate in (path, *path.parents):
+        name = candidate.name
+        if name and _canonical_token(name) in tokens:
+            return True
+    return False
+
+
+def _queue_path(root: Path) -> Path:
+    return root / STATE_DIRNAME / QUEUE_FILENAME
+
+
+def _load_queue_file(root: Path) -> List[str]:
+    path = _queue_path(root)
+    if not path.exists():
+        return []
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    if not isinstance(payload, list):
+        return []
+    return [entry for entry in payload if isinstance(entry, str)]
+
+
+def _persist_queue(root: Path, queue: List[str]) -> None:
+    queue_path = _queue_path(root)
+    queue_path.parent.mkdir(parents=True, exist_ok=True)
+    queue_path.write_text(json.dumps(queue, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _filter_queue_entries(entries: Sequence[str], known_tokens: Set[str]) -> List[str]:
+    filtered: List[str] = []
+    for entry in entries:
+        if not entry:
+            continue
+        candidate = Path(entry)
+        if not candidate.is_file():
+            continue
+        if _path_in_known_clusters(candidate, known_tokens):
+            continue
+        filtered.append(entry)
+    return filtered
+
+
 def list_unlabeled_images(root: Path, known_clusters: Optional[Set[str]] = None) -> List[str]:
     known_tokens = {_canonical_token(c) for c in known_clusters} if known_clusters else set()
     result: List[str] = []
@@ -119,36 +178,43 @@ def list_unlabeled_images(root: Path, known_clusters: Optional[Set[str]] = None)
         for fname in filenames:
             fp = pdir / fname
             if fp.is_file() and is_image_file(fp):
-                result.append(str(fp))
+                result.append(_normalize_path_for_queue(str(fp)))
     result.sort()
     return result
 
 
 def auto_move_queue(
     root: Path,
-    queue: List[str],
-    known_clusters: List[str],
     *,
     threshold: float,
     min_samples: int,
 ) -> Tuple[List[str], List[str], Dict[str, Any], List[Dict[str, str]], Optional[Dict[str, Any]]]:
+    cache = _get_session_cache(root)
     result: Optional[Dict[str, Any]] = None
-    while queue:
-        target = Path(queue[0])
-        result = auto_move_image(root, target, threshold=threshold, min_samples=min_samples)
-        if not result.get("moved"):
+    queue_changed = False
+    while True:
+        with cache.lock:
+            if not cache.queue:
+                break
+            target_entry = cache.queue[0]
+        target = Path(target_entry)
+        move_result = auto_move_image(root, target, threshold=threshold, min_samples=min_samples)
+        result = move_result
+        if not move_result.get("moved"):
             break
-        history = load_history(root)
-        main_state = load_main_state(root)
-        known_clusters = sorted(gather_known_clusters(history, main_state))
-        queue = list_unlabeled_images(root, known_clusters)
-        if not queue:
-            break
-    history = load_history(root)
-    main_state = load_main_state(root)
-    known_clusters = sorted(gather_known_clusters(history, main_state))
-    queue = list_unlabeled_images(root, known_clusters)
-    return queue, known_clusters, result or {}, history, main_state
+        with cache.lock:
+            if cache.queue and cache.queue[0] == target_entry:
+                cache.queue.popleft()
+                queue_changed = True
+    if queue_changed:
+        with cache.lock:
+            cache.persist_queue()
+    with cache.lock:
+        queue_list = list(cache.queue)
+        known_clusters = list(cache.known_clusters)
+        history = list(cache.history)
+        main_state = dict(cache.main_state or {})
+    return queue_list, known_clusters, result or {}, history, main_state
 
 
 def ensure_cluster_dir(img_path: Path, cluster: str) -> Path:
@@ -181,9 +247,10 @@ def append_log(root: Path, entry: Dict[str, str]) -> None:
     with log_path.open("a", encoding="utf-8") as fh:
         json.dump(entry, fh, ensure_ascii=False)
         fh.write("\n")
+    _register_history_entry(root, entry)
 
 
-def load_history(root: Path) -> List[Dict[str, str]]:
+def _read_history_from_disk(root: Path) -> List[Dict[str, str]]:
     log_path = root / STATE_DIRNAME / LOG_NAME
     if not log_path.exists():
         return []
@@ -200,7 +267,11 @@ def load_history(root: Path) -> List[Dict[str, str]]:
     return entries
 
 
-def load_main_state(root: Path) -> Optional[Dict[str, Any]]:
+def load_history(root: Path) -> List[Dict[str, str]]:
+    return _read_history_from_disk(root)
+
+
+def _read_main_state_from_disk(root: Path) -> Optional[Dict[str, Any]]:
     state_path = root / CLUSTER_STATE_DIRNAME / CLUSTER_STATE_FILE
     if not state_path.exists():
         return None
@@ -209,6 +280,10 @@ def load_main_state(root: Path) -> Optional[Dict[str, Any]]:
             return json.load(fh)
     except (OSError, json.JSONDecodeError):
         return None
+
+
+def load_main_state(root: Path) -> Optional[Dict[str, Any]]:
+    return _read_main_state_from_disk(root)
 
 
 def clusters_from_state(state: Optional[Dict[str, Any]]) -> Set[str]:
@@ -238,6 +313,199 @@ def gather_known_clusters(
     names.update(clusters_from_state(main_state))
     names.update(clusters_from_history(history_entries))
     return names
+
+
+class _SessionCache:
+    def __init__(self, root: Path):
+        self.root = root.resolve()
+        self.lock = Lock()
+        self.history = _read_history_from_disk(self.root)
+        self.main_state = _read_main_state_from_disk(self.root) or {}
+        initial_known = sorted(gather_known_clusters(self.history, self.main_state))
+        self.known_clusters = initial_known
+        self._known_cluster_names: Set[str] = set(initial_known)
+        self._known_cluster_tokens: Set[str] = {
+            _canonical_token(name) for name in initial_known if name
+        }
+        initial_queue = self._build_initial_queue()
+        self.queue = deque(initial_queue)
+
+    def _build_initial_queue(self) -> List[str]:
+        tokens = self._known_cluster_tokens
+        entries = _filter_queue_entries(_load_queue_file(self.root), tokens)
+        if not entries:
+            entries = list_unlabeled_images(self.root, set(self.known_clusters))
+        normalized = [_normalize_path_for_queue(entry) for entry in entries]
+        _persist_queue(self.root, normalized)
+        return normalized
+
+    def _trim_queue(self, tokens: Set[str]) -> bool:
+        if not tokens:
+            return False
+        filtered: List[str] = []
+        changed = False
+        for entry in self.queue:
+            candidate = Path(entry)
+            if not candidate.is_file():
+                changed = True
+                continue
+            if _path_in_known_clusters(candidate, tokens):
+                changed = True
+                continue
+            filtered.append(entry)
+        if changed:
+            self.queue = deque(filtered)
+        return changed
+
+    def add_known_cluster(self, cluster_name: str) -> bool:
+        canonical = _canonical_token(cluster_name)
+        if not canonical or canonical in self._known_cluster_tokens:
+            return False
+        self._known_cluster_tokens.add(canonical)
+        if cluster_name not in self._known_cluster_names:
+            self._known_cluster_names.add(cluster_name)
+            self.known_clusters = sorted(self._known_cluster_names)
+        return self._trim_queue({canonical})
+
+    def add_history_entry(self, entry: Dict[str, str]) -> bool:
+        self.history.append(entry)
+        cluster = entry.get("cluster")
+        if cluster and cluster not in {"__deleted__", None}:
+            return self.add_known_cluster(cluster)
+        return False
+
+    def persist_queue(self) -> None:
+        _persist_queue(self.root, list(self.queue))
+
+    def remove_paths(self, paths: Sequence[str]) -> bool:
+        normalized = {_normalize_path_for_queue(p) for p in paths if p}
+        if not normalized:
+            return False
+        filtered = deque(entry for entry in self.queue if entry not in normalized)
+        changed = len(filtered) != len(self.queue)
+        if changed:
+            self.queue = filtered
+        return changed
+
+    def prepend_path(self, path: str) -> bool:
+        if not path:
+            return False
+        normalized = _normalize_path_for_queue(path)
+        try:
+            self.queue.remove(normalized)
+        except ValueError:
+            pass
+        self.queue.appendleft(normalized)
+        return True
+
+    def rotate_head(self) -> bool:
+        if not self.queue:
+            return False
+        item = self.queue.popleft()
+        self.queue.append(item)
+        return True
+
+    def shuffle_items(self) -> bool:
+        if not self.queue:
+            return False
+        entries = list(self.queue)
+        random.shuffle(entries)
+        self.queue = deque(entries)
+        return True
+
+    def get_queue_slice(self, offset: int, limit: int) -> Tuple[List[str], int, int, int]:
+        total = len(self.queue)
+        if offset < 0:
+            offset = 0
+        if limit <= 0:
+            limit = DEFAULT_QUEUE_LIMIT
+        if offset > total:
+            offset = total
+        end = min(offset + limit, total)
+        chunk = list(islice(self.queue, offset, end))
+        return chunk, offset, limit, total
+
+
+_SESSION_CACHE: Dict[str, _SessionCache] = {}
+
+
+def _get_session_cache(root: Path) -> _SessionCache:
+    key = str(root.resolve())
+    cache = _SESSION_CACHE.get(key)
+    if cache is None:
+        cache = _SessionCache(root)
+        _SESSION_CACHE[key] = cache
+    return cache
+
+
+def _update_cache_main_state(root: Path, state: Dict[str, Any]) -> None:
+    cache = _SESSION_CACHE.get(str(root.resolve()))
+    if cache is None:
+        return
+    with cache.lock:
+        cache.main_state = dict(state or {})
+
+
+def _register_history_entry(root: Path, entry: Dict[str, str]) -> None:
+    cache = _get_session_cache(root)
+    with cache.lock:
+        should_persist = cache.add_history_entry(entry)
+        if should_persist:
+            cache.persist_queue()
+
+
+def skip_queue_item(root: Path) -> bool:
+    cache = _get_session_cache(root)
+    with cache.lock:
+        success = cache.rotate_head()
+        if success:
+            cache.persist_queue()
+        return success
+
+
+def shuffle_queue_entries(root: Path) -> bool:
+    cache = _get_session_cache(root)
+    with cache.lock:
+        success = cache.shuffle_items()
+        if success:
+            cache.persist_queue()
+        return success
+
+
+def get_queue_slice(root: Path, *, offset: int = 0, limit: int = DEFAULT_QUEUE_LIMIT) -> Dict[str, Any]:
+    cache = _get_session_cache(root)
+    with cache.lock:
+        queue_chunk, offset, limit, total = cache.get_queue_slice(offset, limit)
+    return {
+        "queue": queue_chunk,
+        "offset": offset,
+        "limit": limit,
+        "total": total,
+        "has_more": offset + len(queue_chunk) < total,
+    }
+
+
+def get_session_snapshot(root: Path) -> Tuple[List[Dict[str, str]], Dict[str, Any], List[str]]:
+    cache = _get_session_cache(root)
+    with cache.lock:
+        history = list(cache.history)
+        main_state = dict(cache.main_state or {})
+        known_clusters = list(cache.known_clusters)
+    return history, main_state, known_clusters
+
+
+def remove_paths_from_queue(root: Path, paths: Sequence[str]) -> None:
+    cache = _get_session_cache(root)
+    with cache.lock:
+        if cache.remove_paths(paths):
+            cache.persist_queue()
+
+
+def prepend_path_to_queue(root: Path, path: str) -> None:
+    cache = _get_session_cache(root)
+    with cache.lock:
+        if cache.prepend_path(path):
+            cache.persist_queue()
 
 
 def compute_stats(
@@ -326,6 +594,7 @@ def _persist_clustering_state(root: Path, state: Dict[str, Any]) -> None:
     state_dir.mkdir(parents=True, exist_ok=True)
     state_path = state_dir / CLUSTER_STATE_FILE
     state_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    _update_cache_main_state(root, payload)
 
 
 def record_assignment(

@@ -36,6 +36,10 @@ class UndoPayload(BaseModel):
     root: str
 
 
+class QueuePayload(BaseModel):
+    root: str
+
+
 def _resolve_root(root_raw: str) -> Path:
     root_path = cluster_core.resolve_input_path(root_raw)
     if root_path is None or not root_path.is_dir():
@@ -75,33 +79,75 @@ def session(
     manual_only: bool = Query(False, description="Skip CLIP suggestions/auto-move"),
     threshold: float = Query(0.9, description="Similarity threshold for auto move"),
     min_samples: int = Query(5, description="Minimum samples required for auto move"),
+    queue_limit: int = Query(
+        cluster_core.DEFAULT_QUEUE_LIMIT,
+        description="Number of queue entries to return",
+        ge=1,
+    ),
 ) -> Dict[str, Any]:
     resolved_root = _resolve_root(root)
-    history = cluster_core.load_history(resolved_root)
-    main_state = cluster_core.load_main_state(resolved_root)
-    known_clusters = sorted(cluster_core.gather_known_clusters(history, main_state))
-    queue = cluster_core.list_unlabeled_images(resolved_root, known_clusters)
+    queue_slice = cluster_core.get_queue_slice(resolved_root, limit=queue_limit)
+    history, main_state, known_clusters = cluster_core.get_session_snapshot(resolved_root)
     auto_move_result = {}
-    if queue and not manual_only:
-        queue, known_clusters, auto_move_result, history, main_state = cluster_core.auto_move_queue(
+    if queue_slice["total"] and not manual_only:
+        _, known_clusters, auto_move_result, history, main_state = cluster_core.auto_move_queue(
             resolved_root,
-            queue,
-            known_clusters,
             threshold=threshold,
             min_samples=min_samples,
         )
-    stats = cluster_core.compute_stats(history, main_state, len(queue))
+        queue_slice = cluster_core.get_queue_slice(resolved_root, limit=queue_limit)
+    stats = cluster_core.compute_stats(history, main_state, queue_slice["total"])
     suggestion = None
-    if queue and not manual_only:
-        suggestion = cluster_core.suggest_for_image(resolved_root, queue[0])
+    if queue_slice["queue"] and not manual_only:
+        suggestion = cluster_core.suggest_for_image(resolved_root, queue_slice["queue"][0])
     return {
         "root": str(resolved_root),
-        "queue": queue,
+        "queue": queue_slice["queue"],
+        "queue_total": queue_slice["total"],
+        "queue_offset": queue_slice["offset"],
+        "queue_limit": queue_slice["limit"],
+        "queue_has_more": queue_slice["has_more"],
         "known_clusters": known_clusters,
         "stats": stats,
         "auto_move": auto_move_result,
         "suggestion": suggestion,
     }
+
+
+@app.get("/queue")
+def queue_chunk(
+    root: str = Query(..., description="Root directory to inspect"),
+    offset: int = Query(0, description="Queue offset", ge=0),
+    limit: int = Query(
+        cluster_core.DEFAULT_QUEUE_LIMIT,
+        description="Number of queue entries to return",
+        ge=1,
+    ),
+) -> Dict[str, Any]:
+    resolved_root = _resolve_root(root)
+    queue_slice = cluster_core.get_queue_slice(resolved_root, offset=offset, limit=limit)
+    return {
+        "queue": queue_slice["queue"],
+        "queue_total": queue_slice["total"],
+        "queue_offset": queue_slice["offset"],
+        "queue_limit": queue_slice["limit"],
+        "queue_has_more": queue_slice["has_more"],
+    }
+
+
+@app.post("/queue/skip")
+def queue_skip(payload: QueuePayload) -> Dict[str, Any]:
+    resolved_root = _resolve_root(payload.root)
+    if not cluster_core.skip_queue_item(resolved_root):
+        raise HTTPException(status_code=400, detail="Queue is empty")
+    return {"status": "ok"}
+
+
+@app.post("/queue/shuffle")
+def queue_shuffle(payload: QueuePayload) -> Dict[str, Any]:
+    resolved_root = _resolve_root(payload.root)
+    cluster_core.shuffle_queue_entries(resolved_root)
+    return {"status": "ok"}
 
 
 @app.post("/assign")
@@ -134,6 +180,7 @@ def assign(payload: AssignPayload) -> Dict[str, Any]:
         },
     )
     cluster_core.record_assignment(resolved_root, cluster, embedding, mode="manual")
+    cluster_core.remove_paths_from_queue(resolved_root, [str(image_path)])
     return {"status": "ok", "path_after": str(destination)}
 
 
@@ -158,22 +205,21 @@ def delete(payload: DeletePayload) -> Dict[str, Any]:
         },
     )
     cluster_core.record_deletion(resolved_root)
+    cluster_core.remove_paths_from_queue(resolved_root, [str(image_path)])
     return {"status": "ok"}
 
 
 @app.post("/auto-move")
 def auto_move(payload: AutoMovePayload) -> Dict[str, Any]:
     resolved_root = _resolve_root(payload.root)
-    history = cluster_core.load_history(resolved_root)
-    main_state = cluster_core.load_main_state(resolved_root)
-    known_clusters = cluster_core.gather_known_clusters(history, main_state)
-    queue = cluster_core.list_unlabeled_images(resolved_root, known_clusters)
     try:
         target = None
         if payload.image_path:
             target = _normalize_path(payload.image_path)
-        elif queue:
-            target = Path(queue[0])
+        else:
+            queue_info = cluster_core.get_queue_slice(resolved_root, limit=1)
+            if queue_info["queue"]:
+                target = Path(queue_info["queue"][0])
         if target is None:
             raise HTTPException(status_code=400, detail="Queue is empty")
         if not cluster_core.is_within_root(target, resolved_root):
@@ -186,6 +232,7 @@ def auto_move(payload: AutoMovePayload) -> Dict[str, Any]:
         )
     except RuntimeError as err:
         raise HTTPException(status_code=400, detail=str(err)) from err
+    cluster_core.remove_paths_from_queue(resolved_root, [str(target)])
     return {"status": "ok", "result": result}
 
 
@@ -196,6 +243,9 @@ def undo(payload: UndoPayload) -> Dict[str, Any]:
         result = cluster_core.undo_last_assignment(resolved_root)
     except (RuntimeError, FileNotFoundError) as err:
         raise HTTPException(status_code=400, detail=str(err)) from err
+    restored = result.get("restored_path")
+    if restored:
+        cluster_core.prepend_path_to_queue(resolved_root, restored)
     return {"status": "ok", "result": result}
 
 

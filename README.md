@@ -12,7 +12,6 @@ This tool combines:
 
 It’s used together with the separate project **Photo Report Generator** (automatic PPTX reports).
 
----
 
 ## What it does
 
@@ -35,7 +34,6 @@ Given a root folder with photos, `cluster-forge` lets you:
 
 The end result is a **clean folder structure** where each cluster has its own directory and all images are consistently grouped for downstream automation (Photo Report Generator).
 
----
 
 ## How it works (high level)
 
@@ -67,7 +65,6 @@ The end result is a **clean folder structure** where each cluster has its own di
 - Shows error messages from the backend (invalid root, missing files, etc.)
 - Built with React + Vite (TypeScript), Axios for API calls, ESLint for static checks.
 
----
 
 ## Typical workflow
 
@@ -105,7 +102,6 @@ The end result is a **clean folder structure** where each cluster has its own di
 When you’re done, the folder tree is already grouped by cluster, and you can feed it
 directly into the **Photo Report Generator** project.
 
----
 
 ## Tech highlights
 
@@ -115,7 +111,6 @@ directly into the **Photo Report Generator** project.
 - File‑system heavy logic with `pathlib` and incremental **NDJSON logging**
 - Focus on **human‑in‑the‑loop ML tooling**: the model helps, but the final decision is always yours.
 
----
 
 ## Repository layout (simplified)
 
@@ -134,7 +129,17 @@ cluster-forge/
 
 (Exact paths may differ slightly depending on how you clone / place the backend code.)
 
----
+
+## Preview
+
+A 1‑minute animated preview of the manual clustering UI, demonstrating queue paging, queue stats overlays, and assignment interactions. This visual demo anchors the before/after story above.
+
+![Manual clustering preview](assets/cluster-preview.gif)
+
+## Screenshot
+
+![Manual clustering screenshot](assets/cluster-preview.gif)
+
 
 ## Relationship to other projects
 
@@ -148,7 +153,6 @@ Together they form a small pipeline:
 > raw photos → `cluster-forge` (interactive clustering) →  
 > normalized folders → Photo Report Generator (PPTX decks)
 
----
 
 ## About the author
 

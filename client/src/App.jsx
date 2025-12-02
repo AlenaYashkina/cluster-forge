@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import "./App.css";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8000";
+const QUEUE_CHUNK_SIZE = 60;
 
 const formatNumber = (value) => {
   return new Intl.NumberFormat("en-US").format(value);
@@ -22,6 +23,9 @@ function App() {
   const [autoMinSamples, setAutoMinSamples] = useState(5);
   const [isAutoMoving, setIsAutoMoving] = useState(false);
   const [isUndoing, setIsUndoing] = useState(false);
+  const [isShuffling, setIsShuffling] = useState(false);
+  const [isSkipping, setIsSkipping] = useState(false);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [overlayVisible, setOverlayVisible] = useState(false);
   const [overlayMessage, setOverlayMessage] = useState("");
 
@@ -84,6 +88,7 @@ function App() {
           if (manualOnly) {
             params.set("manual_only", "1");
           }
+          params.set("queue_limit", QUEUE_CHUNK_SIZE.toString());
           const response = await fetch(`${API_BASE}/session?${params.toString()}`);
           if (!response.ok) {
             throw new Error(await response.text());
@@ -191,10 +196,79 @@ function App() {
     }
   };
 
-  const skipImage = () => {
-    setActionMessage("Skipped for now");
-    reloadSession();
-  };
+  const skipImage = useCallback(async () => {
+    if (!session) {
+      return;
+    }
+    setIsSkipping(true);
+    setErrorMessage("");
+    try {
+      await runWithOverlay(
+        "Skipping photo...",
+        async () => {
+          const response = await fetch(`${API_BASE}/queue/skip`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ root: session.root }),
+          });
+          if (!response.ok) {
+            throw new Error(await response.text());
+          }
+        }
+      );
+      setActionMessage("Skipped image");
+      reloadSession();
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : "Skip failed");
+    } finally {
+      setIsSkipping(false);
+    }
+  }, [session, runWithOverlay, reloadSession]);
+
+  const loadMoreQueue = useCallback(async () => {
+    if (!session?.queue_has_more || isLoadingMore) {
+      return;
+    }
+    setIsLoadingMore(true);
+    setErrorMessage("");
+    try {
+      const offset = session.queue.length;
+      const limit = session.queue_limit ?? QUEUE_CHUNK_SIZE;
+      const params = new URLSearchParams({
+        root: session.root,
+        offset: offset.toString(),
+        limit: limit.toString(),
+      });
+      const response = await fetch(`${API_BASE}/queue?${params.toString()}`);
+      if (!response.ok) {
+        throw new Error(await response.text());
+      }
+      const data = await response.json();
+      const added = Array.isArray(data.queue) ? data.queue.length : 0;
+      setSession((prev) => {
+        if (!prev) {
+          return prev;
+        }
+        return {
+          ...prev,
+          queue: [...prev.queue, ...(data.queue ?? [])],
+          queue_total: data.queue_total,
+          queue_offset: data.queue_offset,
+          queue_limit: data.queue_limit,
+          queue_has_more: data.queue_has_more,
+        };
+      });
+      if (added) {
+        setActionMessage(`Loaded ${added} more queue item${added === 1 ? "" : "s"}.`);
+      }
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : "Failed to load queue");
+    } finally {
+      setIsLoadingMore(false);
+    }
+  }, [session, isLoadingMore]);
 
   const handleNewCluster = async (event) => {
     event.preventDefault();
@@ -204,20 +278,37 @@ function App() {
     }
   };
 
-  const shuffleQueue = () => {
-    setSession((prev) => {
-      if (!prev?.queue?.length) {
-        return prev;
-      }
-      const updatedQueue = [...prev.queue];
-      for (let i = updatedQueue.length - 1; i > 0; i -= 1) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [updatedQueue[i], updatedQueue[j]] = [updatedQueue[j], updatedQueue[i]];
-      }
-      return { ...prev, queue: updatedQueue };
-    });
-    setActionMessage("Queue shuffled locally");
-  };
+  const shuffleQueue = useCallback(async () => {
+    if (!session) {
+      return;
+    }
+    setIsShuffling(true);
+    setErrorMessage("");
+    try {
+      await runWithOverlay(
+        "Shuffling queue...",
+        async () => {
+          const response = await fetch(`${API_BASE}/queue/shuffle`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ root: session.root }),
+          });
+          if (!response.ok) {
+            throw new Error(await response.text());
+          }
+        },
+        { soundOnSuccess: true }
+      );
+      setActionMessage("Queue shuffled");
+      reloadSession();
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : "Shuffle failed");
+    } finally {
+      setIsShuffling(false);
+    }
+  }, [session, runWithOverlay, reloadSession]);
 
   const triggerAutoMove = async () => {
     if (!session || isAutoMoving || !currentImage) {
@@ -342,9 +433,9 @@ function App() {
           <button
             type="button"
             onClick={shuffleQueue}
-            disabled={!session?.queue?.length}
+            disabled={!session?.queue?.length || isShuffling}
           >
-            Shuffle queue
+            {isShuffling ? "Shuffling queue…" : "Shuffle queue"}
           </button>
           <button
             type="button"
@@ -353,6 +444,20 @@ function App() {
           >
             {isUndoing ? "Undoing…" : "Undo last move"}
           </button>
+          {session?.queue_has_more && (
+            <button
+              type="button"
+              onClick={loadMoreQueue}
+              disabled={isLoadingMore}
+            >
+              {isLoadingMore ? "Loading queue…" : "Load more queue"}
+            </button>
+          )}
+          {session && (
+            <span className="queue-progress">
+              Loaded {session.queue.length} / {session.queue_total ?? session.queue.length}
+            </span>
+          )}
         </div>
         <label className="manual-toggle">
           <input
@@ -432,9 +537,14 @@ function App() {
                 <button type="button" className="secondary" onClick={deleteImage}>
                   Delete
                 </button>
-                <button type="button" className="secondary" onClick={skipImage}>
-                  Skip
-                </button>
+                 <button
+                   type="button"
+                   className="secondary"
+                   onClick={skipImage}
+                   disabled={isSkipping}
+                 >
+                   {isSkipping ? "Skipping…" : "Skip"}
+                 </button>
               </div>
               {!manualOnly ? (
                 <div className="auto-controls">
