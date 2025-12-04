@@ -74,21 +74,22 @@ The end result is a **clean folder structure** where each cluster has its own di
 
    ```bash
    # create venv and install dependencies
-   pip install -r requirements.txt
+   pip install -r backend/requirements.txt
 
-   # run FastAPI app
+   # run FastAPI app (from repo root)
    uvicorn api:app --reload --port 8000
    ```
 
-3. **Configure the frontend**:
+3. **Configure the frontend** (from the `client/` folder):
 
    ```bash
+   cd client
    cp .env.example .env
    # set VITE_API_URL to the backend URL, e.g.
    VITE_API_URL=http://localhost:8000
    ```
 
-4. **Run the frontend**:
+4. **Run the frontend** (still in `client/`):
 
    ```bash
    npm install

@@ -40,6 +40,7 @@ STATE_DIRNAME = ".manual_cluster"
 LOG_NAME = "actions.jsonl"
 CLUSTER_STATE_DIRNAME = ".clustering"
 CLUSTER_STATE_FILE = "state.json"
+TRASH_DIRNAME = "trash"
 QUEUE_FILENAME = "queue.json"
 DEFAULT_QUEUE_LIMIT = 60
 CLIP_MAX_EDGE = 1024
@@ -269,6 +270,23 @@ def _read_history_from_disk(root: Path) -> List[Dict[str, str]]:
 
 def load_history(root: Path) -> List[Dict[str, str]]:
     return _read_history_from_disk(root)
+
+
+def _persist_history_entries(root: Path, entries: List[Dict[str, str]]) -> None:
+    log_path = root / STATE_DIRNAME / LOG_NAME
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("w", encoding="utf-8") as fh:
+        for entry in entries:
+            json.dump(entry, fh, ensure_ascii=False)
+            fh.write("\n")
+    cache = _SESSION_CACHE.get(str(root.resolve()))
+    if cache is None:
+        return
+    with cache.lock:
+        cache.history = list(entries)
+        cache.known_clusters = sorted(gather_known_clusters(cache.history, cache.main_state))
+        cache._known_cluster_names = set(cache.known_clusters)
+        cache._known_cluster_tokens = {_canonical_token(name) for name in cache._known_cluster_names if name}
 
 
 def _read_main_state_from_disk(root: Path) -> Optional[Dict[str, Any]]:
@@ -552,9 +570,52 @@ def is_within_root(candidate: Path, root: Path) -> bool:
     return root == candidate or root in candidate.parents
 
 
-def delete_file(file_path: Path) -> None:
-    if file_path.exists():
-        file_path.unlink()
+def _trash_root(root: Path) -> Path:
+    return root / STATE_DIRNAME / TRASH_DIRNAME
+
+
+def _trash_destination(root: Path, file_path: Path) -> Path:
+    trash_root = _trash_root(root)
+    trash_root.mkdir(parents=True, exist_ok=True)
+    try:
+        relative = file_path.resolve().relative_to(root.resolve())
+    except (ValueError, OSError, RuntimeError):
+        relative = Path(file_path.name)
+    destination = trash_root / relative
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.exists():
+        stem, suffix = destination.stem, destination.suffix
+        idx = 1
+        while True:
+            candidate = destination.with_name(f"{stem}__del{idx}{suffix}")
+            if not candidate.exists():
+                destination = candidate
+                break
+            idx += 1
+    return destination
+
+
+def delete_file(root: Path, file_path: Path) -> Optional[Path]:
+    if not file_path.exists():
+        return None
+    destination = _trash_destination(root, file_path)
+    shutil.move(str(file_path), str(destination))
+    return destination
+
+
+def _build_restore_target(original: Path) -> Path:
+    target = original
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists():
+        stem, suffix = target.stem, target.suffix
+        idx = 1
+        while True:
+            candidate = target.with_name(f"{stem}__undo{idx}{suffix}")
+            if not candidate.exists():
+                target = candidate
+                break
+            idx += 1
+    return target
 
 
 def _ensure_clustering_state(root: Path) -> Dict[str, Any]:
@@ -831,26 +892,31 @@ def undo_last_assignment(root: Path) -> Dict[str, Any]:
     if not history:
         raise RuntimeError("No actions recorded yet.")
     last_entry = history.pop()
-    if last_entry.get("cluster") in {"__deleted__", None}:
-        raise RuntimeError("Cannot undo delete actions.")
-    src = Path(last_entry.get("src", ""))
+    cluster = last_entry.get("cluster")
+    src_raw = last_entry.get("src") or ""
+    if not src_raw:
+        raise RuntimeError("Last action is missing a source path.")
+    src = Path(src_raw)
+    if cluster == "__deleted__":
+        trash_raw = last_entry.get("dst") or ""
+        trash_path = Path(trash_raw)
+        if not trash_raw or not trash_path.exists():
+            raise FileNotFoundError("Deleted file is no longer available for undo.")
+        target = _build_restore_target(src)
+        shutil.move(str(trash_path), str(target))
+        state = _ensure_clustering_state(root)
+        state["deleted_total"] = max(0, state.get("deleted_total", 0) - 1)
+        _persist_clustering_state(root, state)
+        _persist_history_entries(root, history)
+        return {"cluster": cluster, "restored_path": str(target), "original": str(src)}
+    if cluster is None:
+        raise RuntimeError("Last action is missing cluster information.")
     dst = Path(last_entry.get("dst", ""))
     if not dst.exists():
         raise FileNotFoundError("Assigned file no longer exists.")
-    target = src
-    target.parent.mkdir(parents=True, exist_ok=True)
-    if target.exists():
-        stem, suffix = target.stem, target.suffix
-        idx = 1
-        while True:
-            candidate = target.with_name(f"{stem}__undo{idx}{suffix}")
-            if not candidate.exists():
-                target = candidate
-                break
-            idx += 1
+    target = _build_restore_target(src)
     shutil.move(str(dst), str(target))
     state = _ensure_clustering_state(root)
-    cluster = last_entry.get("cluster")
     counts = state.get("counts", {})
     counts[cluster] = max(0, counts.get(cluster, 0) - 1)
     cluster_vectors = state.get("clusters", {})
@@ -862,9 +928,5 @@ def undo_last_assignment(root: Path) -> Dict[str, Any]:
     total_key = "auto_total" if mode == "auto" else "manual_total"
     state[total_key] = max(0, state.get(total_key, 0) - 1)
     _persist_clustering_state(root, state)
-    log_path = root / STATE_DIRNAME / LOG_NAME
-    with log_path.open("w", encoding="utf-8") as fh:
-        for entry in history:
-            json.dump(entry, fh, ensure_ascii=False)
-            fh.write("\n")
+    _persist_history_entries(root, history)
     return {"cluster": cluster, "restored_path": str(target), "original": str(src)}

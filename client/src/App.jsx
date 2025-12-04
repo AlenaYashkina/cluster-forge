@@ -18,7 +18,13 @@ function App() {
   const [actionMessage, setActionMessage] = useState("");
   const [newCluster, setNewCluster] = useState("");
   const [refreshKey, setRefreshKey] = useState(0);
-  const [manualOnly, setManualOnly] = useState(false);
+  const [manualOnly, setManualOnly] = useState(() => {
+    const saved = localStorage.getItem("manualOnly");
+    if (saved !== null) {
+      return saved === "1";
+    }
+    return true;
+  });
   const [autoThreshold, setAutoThreshold] = useState(0.9);
   const [autoMinSamples, setAutoMinSamples] = useState(5);
   const [isAutoMoving, setIsAutoMoving] = useState(false);
@@ -116,6 +122,10 @@ function App() {
   useEffect(() => {
     localStorage.setItem("manualRoot", rootInput);
   }, [rootInput]);
+
+  useEffect(() => {
+    localStorage.setItem("manualOnly", manualOnly ? "1" : "0");
+  }, [manualOnly]);
 
   useEffect(() => {
     fetchSession();

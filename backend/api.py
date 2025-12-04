@@ -17,7 +17,7 @@ class AssignPayload(BaseModel):
     root: str
     image_path: str
     cluster: str
-    manual_only: bool = False
+    manual_only: bool = True
 
 
 class DeletePayload(BaseModel):
@@ -191,7 +191,7 @@ def delete(payload: DeletePayload) -> Dict[str, Any]:
     if not cluster_core.is_within_root(image_path, resolved_root):
         raise HTTPException(status_code=400, detail="Image is not within provided root")
     try:
-        cluster_core.delete_file(image_path)
+        trash_path = cluster_core.delete_file(resolved_root, image_path)
     except (OSError, PermissionError) as delete_err:
         raise HTTPException(status_code=500, detail=f"Delete error: {delete_err}") from delete_err
     cluster_core.append_log(
@@ -199,7 +199,7 @@ def delete(payload: DeletePayload) -> Dict[str, Any]:
         {
             "ts": datetime.now().isoformat(),
             "src": str(image_path),
-            "dst": "",
+            "dst": str(trash_path or ""),
             "cluster": "__deleted__",
             "note": "react-ui",
         },
