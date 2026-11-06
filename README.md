@@ -13,6 +13,12 @@ This tool combines:
 It’s used together with the separate project **Photo Report Generator** (automatic PPTX reports).
 
 
+## Filesystem API safety (important)
+
+The FastAPI backend is intended for **local use only**, never a public internet deployment. Set `CLUSTER_FORGE_WORKSPACE` to an existing folder containing disposable copies of your images before starting the API. Requests outside that workspace are rejected. Set `CLUSTER_FORGE_ORIGIN` to the exact frontend origin (default: `http://localhost:5173`).
+
+`GET /session` is read-only with respect to image movement; use the explicit `POST /auto-move` action for automatic sorting. The API has no user authentication; workspace restrictions are a defense-in-depth measure, not permission to expose it publicly. Backup original photos, then test assigning, undoing and symlink cases before using any valuable files.
+
 ## What it does
 
 Given a root folder with photos, `cluster-forge` lets you:

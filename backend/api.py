@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -44,7 +45,14 @@ def _resolve_root(root_raw: str) -> Path:
     root_path = cluster_core.resolve_input_path(root_raw)
     if root_path is None or not root_path.is_dir():
         raise HTTPException(status_code=400, detail="Cannot resolve provided root folder")
-    return root_path.resolve()
+    resolved = root_path.resolve()
+    configured = os.environ.get("CLUSTER_FORGE_WORKSPACE")
+    if not configured:
+        raise HTTPException(status_code=503, detail="CLUSTER_FORGE_WORKSPACE must be set for API filesystem access")
+    allowed = Path(configured).expanduser().resolve()
+    if not allowed.is_dir() or not cluster_core.is_within_root(resolved, allowed):
+        raise HTTPException(status_code=403, detail="Requested root is outside configured workspace")
+    return resolved
 
 
 def _normalize_path(raw: str) -> Path:
@@ -62,7 +70,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[os.environ.get("CLUSTER_FORGE_ORIGIN", "http://localhost:5173")],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -88,14 +96,8 @@ def session(
     resolved_root = _resolve_root(root)
     queue_slice = cluster_core.get_queue_slice(resolved_root, limit=queue_limit)
     history, main_state, known_clusters = cluster_core.get_session_snapshot(resolved_root)
+    # GET endpoints must never move original files.
     auto_move_result = {}
-    if queue_slice["total"] and not manual_only:
-        _, known_clusters, auto_move_result, history, main_state = cluster_core.auto_move_queue(
-            resolved_root,
-            threshold=threshold,
-            min_samples=min_samples,
-        )
-        queue_slice = cluster_core.get_queue_slice(resolved_root, limit=queue_limit)
     stats = cluster_core.compute_stats(history, main_state, queue_slice["total"])
     suggestion = None
     if queue_slice["queue"] and not manual_only:
@@ -167,7 +169,7 @@ def assign(payload: AssignPayload) -> Dict[str, Any]:
             embedding = None
     try:
         destination = cluster_core.move_into_cluster(image_path, cluster)
-    except (OSError, shutil.Error) as move_err:
+    except (OSError, shutil.Error, ValueError) as move_err:
         raise HTTPException(status_code=500, detail=f"Assign error: {move_err}") from move_err
     cluster_core.append_log(
         resolved_root,
