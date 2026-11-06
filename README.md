@@ -75,7 +75,10 @@ The end result is a **clean folder structure** where each cluster has its own di
    pip install -r backend/requirements.txt
 
    # run FastAPI app (from repo root)
-   uvicorn api:app --reload --port 8000
+   # Set CLUSTER_FORGE_WORKSPACE to an existing folder of disposable photo copies first.
+   # Windows PowerShell example:
+   # $env:CLUSTER_FORGE_WORKSPACE = "C:\\photo-demo"
+   python -m uvicorn api:app --host 127.0.0.1 --port 8000
    ```
 
 3. **Configure the frontend** (from the `client/` folder):
@@ -83,8 +86,8 @@ The end result is a **clean folder structure** where each cluster has its own di
    ```bash
    cd client
    cp .env.example .env
-   # set VITE_API_URL to the backend URL, e.g.
-   VITE_API_URL=http://localhost:8000
+   # the supplied .env.example contains:
+   VITE_API_BASE=http://localhost:8000
    ```
 
 4. **Run the frontend** (still in `client/`):
