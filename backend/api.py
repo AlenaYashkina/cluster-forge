@@ -243,7 +243,7 @@ def undo(payload: UndoPayload) -> Dict[str, Any]:
     resolved_root = _resolve_root(payload.root)
     try:
         result = cluster_core.undo_last_assignment(resolved_root)
-    except (RuntimeError, FileNotFoundError) as err:
+    except (RuntimeError, FileNotFoundError, ValueError) as err:
         raise HTTPException(status_code=400, detail=str(err)) from err
     restored = result.get("restored_path")
     if restored:
