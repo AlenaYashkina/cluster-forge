@@ -136,7 +136,11 @@ cluster-forge/
 
 An animated preview of the manual clustering UI, demonstrating queue paging, queue stats overlays, and assignment interactions. This visual demo anchors the before/after story above.
 
-![Manual clustering preview](assets/cluster-preview.gif)
+![Cluster Forge interface — extracted frame from the recorded demo](assets/cluster-poster.png)
+
+[Watch the actual interface recording (MP4, ~2.3 MB)](assets/cluster-preview.mp4) · [Animated preview (optimized GIF)](assets/cluster-preview-small.gif)
+
+The poster and video are extracted from the original UI recording; they are not AI-generated mock-ups.
 
 ## Relationship to other projects
 

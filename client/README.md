@@ -2,7 +2,9 @@
 
 This is the Vite/React (JSX) frontend for [Cluster Forge](../README.md), a local, human-in-the-loop photo organization tool.
 
-![Manual clustering interface](../assets/cluster-preview.gif)
+![Manual clustering interface](../assets/cluster-poster.png)
+
+[Recorded UI demo (MP4)](../assets/cluster-preview.mp4) · [Optimized animated GIF](../assets/cluster-preview-small.gif)
 
 The UI sends queue, assign, skip, shuffle, undo and auto-move requests to the local FastAPI backend. Classification suggestions use CLIP image embeddings compared against centroids from human-labeled examples; they are not independently measured accuracy percentages.
 
