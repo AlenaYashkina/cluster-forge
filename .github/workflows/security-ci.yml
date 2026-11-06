@@ -13,6 +13,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: python -m pip install pytest
+      - run: python -m pip install pytest fastapi 'uvicorn>=0.23'
       - run: python -m compileall -q backend
-      - run: python -m pytest -q tests/test_safe_cluster_names.py tests/test_undo_safety.py
+      - run: python -m pytest -q tests/test_safe_cluster_names.py tests/test_undo_safety.py tests/test_auto_move_queue.py

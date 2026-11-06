@@ -234,8 +234,16 @@ def auto_move(payload: AutoMovePayload) -> Dict[str, Any]:
         )
     except RuntimeError as err:
         raise HTTPException(status_code=400, detail=str(err)) from err
-    cluster_core.remove_paths_from_queue(resolved_root, [str(target)])
-    return {"status": "ok", "result": result}
+    # An unconfident suggestion, missing exemplars or failed move must stay
+    # in the manual queue; removing the target unconditionally loses work.
+    successfully_moved = [
+        str(target)
+        for moved in result.get("moved", [])
+        if isinstance(moved, dict) and moved.get("src") == str(target) and moved.get("dst")
+    ]
+    if successfully_moved:
+        cluster_core.remove_paths_from_queue(resolved_root, successfully_moved)
+    return {"status": "ok" if successfully_moved else "skipped", "result": result}
 
 
 @app.post("/undo")
