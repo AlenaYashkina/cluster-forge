@@ -1,3 +1,5 @@
+[Русская версия](README.ru.md)
+
 # Cluster Forge — CLIP‑assisted image clustering for photo reports
 
 `cluster-forge` is an **interactive image clustering tool** that sits between raw site photos and the final photo‑report automation pipeline.
