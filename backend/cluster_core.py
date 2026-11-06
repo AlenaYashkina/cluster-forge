@@ -220,7 +220,23 @@ def auto_move_queue(
 
 def ensure_cluster_dir(img_path: Path, cluster: str) -> Path:
     cluster = cluster.strip()
-    base = img_path.parent / cluster
+    # Cluster names are labels, not paths. Reject traversal, drives, separators,
+    # or a symlink which resolves outside the image's parent directory.
+    if (
+        not cluster
+        or cluster in {".", ".."}
+        or Path(cluster).name != cluster
+        or "/" in cluster
+        or "\\" in cluster
+        or any(ord(char) < 32 for char in cluster)
+    ):
+        raise ValueError("Cluster must be a single safe directory name")
+    parent = img_path.parent.resolve()
+    base = parent / cluster
+    if base.resolve() != base and not is_within_root(base, parent):
+        raise ValueError("Cluster directory escapes the image parent")
+    if not is_within_root(base, parent) or base.resolve() == parent:
+        raise ValueError("Cluster directory escapes the image parent")
     base.mkdir(parents=True, exist_ok=True)
     return base
 
