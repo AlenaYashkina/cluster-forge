@@ -45,20 +45,12 @@ The end result is a **clean folder structure** where each cluster has its own di
 
 ### 1. Backend (Python + FastAPI + CLIP)
 
-- Uses **OpenCLIP** to encode:
-  - images from the root folder
-  - text prompts that describe each cluster label
-- For each image:
-  - computes cosine similarity to each label prompt
-  - picks the best match and compares it to a **confidence threshold**
-- Exposes a **FastAPI** backend with endpoints like:
-  - get next item in queue
-  - assign to a cluster
-  - move to trash / later
-  - undo last assignment
-  - compute basic stats from the history log
-- Physically **moves files on disk** into cluster folders using `pathlib`, while
-  updating an NDJSON history log in `.cluster_state/`.
+- Uses `transformers.CLIPModel` and `CLIPProcessor` to extract image embeddings, not OpenCLIP text-prompt zero-shot classification.
+- A person labels representative images first. The system stores embeddings for manually assigned examples when **manual-only mode is off**.
+- New images are compared with the stored cluster centroids using similarity. High-similarity matches may be moved automatically; ambiguous items remain in the manual review queue.
+- Similarity scores and thresholds are **not model accuracy or validated confidence percentages**. No CLIP weights are retrained.
+- File moves and decisions are recorded under `.manual_cluster/` and clustering state under `.clustering/`.
+- The FastAPI API exposes explicit assign, delete, skip, shuffle, auto-move and undo actions.
 
 ### 2. Frontend (React + Vite)
 
@@ -69,7 +61,7 @@ The end result is a **clean folder structure** where each cluster has its own di
   - shuffle the queue
   - quickly assign / skip / undo
 - Shows error messages from the backend (invalid root, missing files, etc.)
-- Built with React + Vite (TypeScript), Axios for API calls, ESLint for static checks.
+- Built with React + Vite (JSX), with lint configuration. See the actual client source for the current API wrapper.
 
 
 ## Typical workflow
@@ -102,8 +94,8 @@ The end result is a **clean folder structure** where each cluster has its own di
    npm run dev
    ```
 
-5. Open the shown URL (usually `http://localhost:5173`), set the root folder,  
-   and start assigning clusters. CLIP will auto‑label everything it’s confident about;
+5. Open the shown URL (usually `http://localhost:5173`), select a folder **inside the configured `CLUSTER_FORGE_WORKSPACE`**,  
+   and start assigning clusters. CLIP can suggest or auto-route sufficiently similar images once labeled examples exist;
    the rest you review manually.
 
 When you’re done, the folder tree is already grouped by cluster, and you can feed it
@@ -113,33 +105,33 @@ directly into the **Photo Report Generator** project.
 ## Tech highlights
 
 - **Python** (3.x), **FastAPI**, **Pydantic**
-- **OpenCLIP** for zero‑shot image classification
-- **React**, **Vite**, **TypeScript**
+- **Hugging Face Transformers CLIP** for image similarity against labeled examples
+- **React**, **Vite**, **JSX**
 - File‑system heavy logic with `pathlib` and incremental **NDJSON logging**
 - Focus on **human‑in‑the‑loop ML tooling**: the model helps, but the final decision is always yours.
 
 
-## Repository layout (simplified)
+## Repository layout
 
 ```text
 cluster-forge/
-├── api.py              # FastAPI app (REST API for the UI)
-├── cluster_core.py     # CLIP model, queue logic, file moves, logging
-├── cluster-preview.gif # Short demo of the UI
-├── client/ (or repo root)
-│   ├── package.json    # React/Vite frontend
+├── api.py                 # FastAPI entry point
+├── backend/
+│   ├── api.py             # REST handlers
+│   └── cluster_core.py    # Image embeddings, queue and file operations
+├── client/
+│   ├── package.json
 │   ├── vite.config.js
-│   ├── src/…           # React components & API client
-│   └── .env.example    # VITE_API_URL and other client settings
-└── README.md           # This file
+│   └── src/               # React JSX interface
+├── assets/
+│   └── cluster-preview.gif
+├── tests/                 # Filesystem safety tests
+└── README.md
 ```
-
-(Exact paths may differ slightly depending on how you clone / place the backend code.)
-
 
 ## Preview
 
-A 1‑minute animated preview of the manual clustering UI, demonstrating queue paging, queue stats overlays, and assignment interactions. This visual demo anchors the before/after story above.
+An animated preview of the manual clustering UI, demonstrating queue paging, queue stats overlays, and assignment interactions. This visual demo anchors the before/after story above.
 
 ![Manual clustering preview](assets/cluster-preview.gif)
 
@@ -158,9 +150,9 @@ Together they form a small pipeline:
 
 ## About the author
 
-Built by **Alena Yashkina** — lighting engineer turned AI‑automation developer.  
+Built by **Alena Yashkina** — workflow automation practitioner using AI-assisted coding.  
 Portfolio and contact links:
 
 - GitHub: https://github.com/AlenaYashkina
-- LinkedIn: https://www.linkedin.com/in/alena-yashkina-a9994a35a/
+- LinkedIn: https://www.linkedin.com/in/alena-yashkina
 
