@@ -913,10 +913,14 @@ def undo_last_assignment(root: Path) -> Dict[str, Any]:
     if not src_raw:
         raise RuntimeError("Last action is missing a source path.")
     src = Path(src_raw)
+    if not is_within_root(src, root) or src.resolve() == root.resolve():
+        raise ValueError("Undo source is outside the selected workspace")
     if cluster == "__deleted__":
         trash_raw = last_entry.get("dst") or ""
         trash_path = Path(trash_raw)
-        if not trash_raw or not trash_path.exists():
+        if not trash_raw or not is_within_root(trash_path, root):
+            raise ValueError("Undo trash path is outside the selected workspace")
+        if not trash_path.exists():
             raise FileNotFoundError("Deleted file is no longer available for undo.")
         target = _build_restore_target(src)
         shutil.move(str(trash_path), str(target))
@@ -928,6 +932,8 @@ def undo_last_assignment(root: Path) -> Dict[str, Any]:
     if cluster is None:
         raise RuntimeError("Last action is missing cluster information.")
     dst = Path(last_entry.get("dst", ""))
+    if not is_within_root(dst, root):
+        raise ValueError("Undo destination is outside the selected workspace")
     if not dst.exists():
         raise FileNotFoundError("Assigned file no longer exists.")
     target = _build_restore_target(src)
