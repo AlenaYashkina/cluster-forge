@@ -164,4 +164,6 @@ Portfolio and contact links:
 
 - GitHub: https://github.com/AlenaYashkina
 - LinkedIn: https://www.linkedin.com/in/alena-yashkina
+- Telegram: https://t.me/alena_yashkina
+- Email: alenaiashkina1@gmail.com
 
